@@ -1,447 +1,346 @@
 package be.cawhallevilvoorde.sos
 
 import android.Manifest
-import android.app.Activity
-import android.app.AlertDialog
 import android.content.Context
-import android.content.SharedPreferences
 import android.content.pm.PackageManager
-import android.graphics.Color
-import android.hardware.Sensor
-import android.hardware.SensorEvent
-import android.hardware.SensorEventListener
-import android.hardware.SensorManager
-import android.location.Location
 import android.location.LocationManager
 import android.os.Bundle
-import android.os.CountDownTimer
-import android.os.VibrationEffect
-import android.os.Vibrator
 import android.telephony.SmsManager
-import android.text.InputType
-import android.view.Gravity
-import android.widget.*
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
-import kotlin.math.sqrt
+import java.util.*
 
-class MainActivity : Activity(), SensorEventListener {
+class MainActivity : ComponentActivity() {
 
-    private val prefsName = "caw_sos_prefs"
+    private val prefs by lazy {
+        getSharedPreferences("caw_sos_local_data", Context.MODE_PRIVATE)
+    }
 
-    private val keyFirstName = "first_name"
-    private val keyLastName = "last_name"
-    private val keyTeam = "team"
-    private val keyTcName = "tc_name"
-    private val keyTcPhone = "tc_phone"
+    private var hasRequiredPermissions by mutableStateOf(false)
 
-    private lateinit var prefs: SharedPreferences
-    private lateinit var statusText: TextView
-    private lateinit var profileText: TextView
-
-    private var sensorManager: SensorManager? = null
-    private var accelerometer: Sensor? = null
-
-    private var lastShakeTime = 0L
-    private var shakeCount = 0
-    private var lastSosTime = 0L
-
-    private val shakeThreshold = 22.0f
-    private val requiredShakes = 3
-    private val shakeWindowMs = 2000L
-    private val cooldownMs = 15000L
-
-    private val teams = arrayOf(
-        "Algemeen",
-        "OverKop Halle",
-        "OverKop Vilvoorde",
-        "ILC",
-        "Bravio",
-        "Pivo",
-        "Voogdij",
-        "Andere"
-    )
-
-    private val teamCoordinators = arrayOf(
-        Pair("TC Halle", "+32400000001"),
-        Pair("TC Vilvoorde", "+32400000002"),
-        Pair("TC OverKop", "+32400000003"),
-        Pair("TC Pivo", "+32400000004"),
-        Pair("Eigen nummer invullen", "manual")
-    )
-
-    private val permissions = arrayOf(
-        Manifest.permission.SEND_SMS,
-        Manifest.permission.ACCESS_FINE_LOCATION,
-        Manifest.permission.ACCESS_COARSE_LOCATION,
-        Manifest.permission.CALL_PHONE
-    )
+    private val permissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+            hasRequiredPermissions = checkPermissions()
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        prefs = getSharedPreferences(prefsName, Context.MODE_PRIVATE)
-        createUi()
-        requestNeededPermissions()
+        hasRequiredPermissions = checkPermissions()
 
-        sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
-        accelerometer = sensorManager?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
-
-        if (!isProfileComplete()) {
-            showFirstSetup()
-        }
-    }
-
-    private fun createUi() {
-        val scroll = ScrollView(this)
-        val layout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(42, 54, 42, 54)
-            setBackgroundColor(Color.WHITE)
+        if (!hasRequiredPermissions) {
+            permissionLauncher.launch(
+                arrayOf(
+                    Manifest.permission.SEND_SMS,
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION
+                )
+            )
         }
 
-        val title = TextView(this).apply {
-            text = "CAW SOS"
-            textSize = 34f
-            setTextColor(Color.rgb(176, 0, 32))
-            gravity = Gravity.CENTER
-            setPadding(0, 0, 0, 20)
-        }
-
-        val intro = TextView(this).apply {
-            text = "Druk op SOS of schud de gsm 3 keer.\nNa aftelling wordt een SMS met locatie verstuurd naar de Teamcoördinator."
-            textSize = 16f
-            gravity = Gravity.CENTER
-            setTextColor(Color.rgb(40, 40, 40))
-            setPadding(0, 0, 0, 22)
-        }
-
-        profileText = TextView(this).apply {
-            textSize = 15f
-            gravity = Gravity.CENTER
-            setTextColor(Color.rgb(40, 40, 40))
-            setPadding(0, 0, 0, 24)
-        }
-        refreshProfileText()
-
-        val sosButton = Button(this).apply {
-            text = "SOS"
-            textSize = 36f
-            setTextColor(Color.WHITE)
-            setBackgroundColor(Color.rgb(176, 0, 32))
-            isAllCaps = false
-            minHeight = 235
-            minWidth = 235
-            setOnClickListener { startSosCountdown("Knop") }
-        }
-
-        val testButton = Button(this).apply {
-            text = "Test SOS"
-            isAllCaps = false
-            setOnClickListener { startSosCountdown("Test") }
-        }
-
-        val editButton = Button(this).apply {
-            text = "Gegevens wijzigen"
-            isAllCaps = false
-            setOnClickListener { showFirstSetup() }
-        }
-
-        statusText = TextView(this).apply {
-            text = "Status: klaar"
-            textSize = 15f
-            gravity = Gravity.CENTER
-            setPadding(0, 25, 0, 0)
-        }
-
-        layout.addView(title)
-        layout.addView(intro)
-        layout.addView(profileText)
-        layout.addView(sosButton)
-        layout.addView(testButton)
-        layout.addView(editButton)
-        layout.addView(statusText)
-
-        scroll.addView(layout)
-        setContentView(scroll)
-    }
-
-    private fun showFirstSetup() {
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(40, 20, 40, 0)
-        }
-
-        val firstName = EditText(this).apply {
-            hint = "Voornaam"
-            setText(prefs.getString(keyFirstName, ""))
-        }
-
-        val lastName = EditText(this).apply {
-            hint = "Naam"
-            setText(prefs.getString(keyLastName, ""))
-        }
-
-        val teamSpinner = Spinner(this)
-        teamSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, teams)
-        val savedTeam = prefs.getString(keyTeam, teams[0])
-        teamSpinner.setSelection(teams.indexOf(savedTeam).takeIf { it >= 0 } ?: 0)
-
-        val tcSpinner = Spinner(this)
-        val tcLabels = teamCoordinators.map { "${it.first} (${it.second})" }.toTypedArray()
-        tcSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, tcLabels)
-
-        box.addView(label("Voornaam"))
-        box.addView(firstName)
-        box.addView(label("Naam"))
-        box.addView(lastName)
-        box.addView(label("Team"))
-        box.addView(teamSpinner)
-        box.addView(label("Teamcoördinator"))
-        box.addView(tcSpinner)
-
-        AlertDialog.Builder(this)
-            .setTitle("Welkom bij CAW SOS")
-            .setMessage("Vul éénmalig je gegevens in. Deze gegevens blijven lokaal op de werkgsm.")
-            .setView(box)
-            .setPositiveButton("Opslaan") { _, _ ->
-                val selectedTc = teamCoordinators[tcSpinner.selectedItemPosition]
-                if (selectedTc.second == "manual") {
-                    saveBasicProfile(firstName.text.toString(), lastName.text.toString(), teamSpinner.selectedItem.toString())
-                    showManualTcDialog()
-                } else {
-                    prefs.edit()
-                        .putString(keyFirstName, firstName.text.toString().trim())
-                        .putString(keyLastName, lastName.text.toString().trim())
-                        .putString(keyTeam, teamSpinner.selectedItem.toString())
-                        .putString(keyTcName, selectedTc.first)
-                        .putString(keyTcPhone, selectedTc.second)
-                        .apply()
-                    refreshProfileText()
-                }
+        setContent {
+            MaterialTheme {
+                CawSosApp()
             }
-            .setCancelable(false)
-            .show()
-    }
-
-    private fun label(textValue: String): TextView {
-        return TextView(this).apply {
-            text = textValue
-            textSize = 14f
-            setPadding(0, 18, 0, 0)
         }
     }
 
-    private fun saveBasicProfile(firstName: String, lastName: String, team: String) {
+    private fun checkPermissions(): Boolean {
+        val sms = ContextCompat.checkSelfPermission(this, Manifest.permission.SEND_SMS) == PackageManager.PERMISSION_GRANTED
+        val fineLocation = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        return sms && fineLocation
+    }
+
+    @Composable
+    private fun CawSosApp() {
+        var firstName by remember { mutableStateOf(prefs.getString("firstName", "") ?: "") }
+        var lastName by remember { mutableStateOf(prefs.getString("lastName", "") ?: "") }
+        var sosNumber by remember { mutableStateOf(prefs.getString("sosNumber", "") ?: "") }
+
+        var screen by remember {
+            mutableStateOf(
+                if (firstName.isBlank() || lastName.isBlank() || sosNumber.isBlank()) {
+                    "setup"
+                } else {
+                    "home"
+                }
+            )
+        }
+
+        when (screen) {
+            "setup" -> SetupScreen(firstName, lastName, sosNumber) { f, l, n ->
+                saveUserData(f, l, n)
+                firstName = f
+                lastName = l
+                sosNumber = n
+                screen = "home"
+            }
+
+            "settings" -> SetupScreen(firstName, lastName, sosNumber) { f, l, n ->
+                saveUserData(f, l, n)
+                firstName = f
+                lastName = l
+                sosNumber = n
+                screen = "home"
+            }
+
+            else -> HomeScreen(
+                firstName = firstName,
+                lastName = lastName,
+                sosNumber = sosNumber,
+                onSettingsClick = { screen = "settings" }
+            )
+        }
+    }
+
+    private fun saveUserData(firstName: String, lastName: String, sosNumber: String) {
         prefs.edit()
-            .putString(keyFirstName, firstName.trim())
-            .putString(keyLastName, lastName.trim())
-            .putString(keyTeam, team)
+            .putString("firstName", firstName.trim())
+            .putString("lastName", lastName.trim())
+            .putString("sosNumber", sosNumber.trim())
             .apply()
     }
 
-    private fun showManualTcDialog() {
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(40, 20, 40, 0)
-        }
+    @Composable
+    private fun SetupScreen(
+        currentFirstName: String,
+        currentLastName: String,
+        currentSosNumber: String,
+        onSave: (String, String, String) -> Unit
+    ) {
+        var firstName by remember { mutableStateOf(currentFirstName) }
+        var lastName by remember { mutableStateOf(currentLastName) }
+        var sosNumber by remember { mutableStateOf(currentSosNumber) }
 
-        val name = EditText(this).apply { hint = "Naam Teamcoördinator" }
-        val phone = EditText(this).apply {
-            hint = "Gsm-nummer bv. +32475123456"
-            inputType = InputType.TYPE_CLASS_PHONE
-        }
+        val canSave = firstName.isNotBlank() && lastName.isNotBlank() && sosNumber.isNotBlank()
 
-        box.addView(name)
-        box.addView(phone)
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(24.dp),
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text("CAW SOS", style = MaterialTheme.typography.headlineLarge)
+            Spacer(Modifier.height(8.dp))
+            Text("Eerste configuratie", style = MaterialTheme.typography.titleMedium)
 
-        AlertDialog.Builder(this)
-            .setTitle("Teamcoördinator manueel invullen")
-            .setView(box)
-            .setPositiveButton("Opslaan") { _, _ ->
-                prefs.edit()
-                    .putString(keyTcName, name.text.toString().trim().ifEmpty { "Teamcoördinator" })
-                    .putString(keyTcPhone, phone.text.toString().trim())
-                    .apply()
-                refreshProfileText()
+            Spacer(Modifier.height(28.dp))
+
+            OutlinedTextField(
+                value = firstName,
+                onValueChange = { firstName = it },
+                label = { Text("Voornaam") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+
+            Spacer(Modifier.height(12.dp))
+
+            OutlinedTextField(
+                value = lastName,
+                onValueChange = { lastName = it },
+                label = { Text("Naam") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+
+            Spacer(Modifier.height(12.dp))
+
+            OutlinedTextField(
+                value = sosNumber,
+                onValueChange = { sosNumber = it },
+                label = { Text("SOS-nummer") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone)
+            )
+
+            Spacer(Modifier.height(24.dp))
+
+            Button(
+                onClick = { onSave(firstName, lastName, sosNumber) },
+                enabled = canSave,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Opslaan")
             }
-            .setNegativeButton("Annuleren", null)
-            .show()
-    }
-
-    private fun refreshProfileText() {
-        val fullName = "${prefs.getString(keyFirstName, "")} ${prefs.getString(keyLastName, "")}".trim()
-        val team = prefs.getString(keyTeam, "")
-        val tc = prefs.getString(keyTcName, "")
-        val tcPhone = prefs.getString(keyTcPhone, "")
-
-        profileText.text = if (fullName.isEmpty() || tcPhone.isNullOrEmpty()) {
-            "Profiel: nog niet ingesteld"
-        } else {
-            "Medewerker: $fullName\nTeam: $team\nTeamcoördinator: $tc\n$tcPhone"
         }
     }
 
-    private fun isProfileComplete(): Boolean {
-        return !prefs.getString(keyFirstName, "").isNullOrEmpty()
-                && !prefs.getString(keyLastName, "").isNullOrEmpty()
-                && !prefs.getString(keyTcPhone, "").isNullOrEmpty()
-    }
+    @Composable
+    private fun HomeScreen(
+        firstName: String,
+        lastName: String,
+        sosNumber: String,
+        onSettingsClick: () -> Unit
+    ) {
+        var countdown by remember { mutableStateOf(0) }
+        var isTest by remember { mutableStateOf(false) }
+        var statusMessage by remember { mutableStateOf("") }
 
-    private fun startSosCountdown(source: String) {
-        if (!isProfileComplete()) {
-            Toast.makeText(this, "Vul eerst je gegevens in.", Toast.LENGTH_LONG).show()
-            showFirstSetup()
-            return
-        }
+        LaunchedEffect(countdown) {
+            if (countdown > 0) {
+                delay(1000)
+                countdown--
 
-        val countdownText = TextView(this).apply {
-            text = "SOS wordt verzonden over 5 seconden..."
-            textSize = 20f
-            gravity = Gravity.CENTER
-            setPadding(30, 30, 30, 30)
-        }
-
-        val dialog = AlertDialog.Builder(this)
-            .setTitle(if (source == "Test") "Test SOS" else "SOS activeren")
-            .setView(countdownText)
-            .setNegativeButton("Annuleren", null)
-            .create()
-
-        dialog.show()
-
-        object : CountDownTimer(5000, 1000) {
-            override fun onTick(ms: Long) {
-                countdownText.text = "Verzenden over ${(ms / 1000) + 1}..."
-            }
-
-            override fun onFinish() {
-                if (dialog.isShowing) {
-                    dialog.dismiss()
-                    triggerSos(source)
+                if (countdown == 0) {
+                    val result = sendSosSms(firstName, lastName, sosNumber, isTest)
+                    statusMessage = result
                 }
             }
-        }.start()
-    }
-
-    private fun triggerSos(source: String) {
-        val now = System.currentTimeMillis()
-        if (now - lastSosTime < cooldownMs) {
-            Toast.makeText(this, "Even wachten: er is net een melding verstuurd.", Toast.LENGTH_LONG).show()
-            return
         }
 
-        requestNeededPermissions()
-
-        if (checkSelfPermission(Manifest.permission.SEND_SMS) != PackageManager.PERMISSION_GRANTED) {
-            Toast.makeText(this, "SMS-machtiging ontbreekt.", Toast.LENGTH_LONG).show()
-            return
-        }
-
-        val phone = prefs.getString(keyTcPhone, "") ?: ""
-        val message = buildSmsMessage(source)
-
-        try {
-            val sms = SmsManager.getDefault()
-            val parts = sms.divideMessage(message)
-            sms.sendMultipartTextMessage(phone, null, parts, null, null)
-            lastSosTime = now
-            vibrate()
-            statusText.text = if (source == "Test") "Status: test-SMS verstuurd." else "Status: SOS-SMS verstuurd."
-            Toast.makeText(this, "SMS verstuurd naar Teamcoördinator.", Toast.LENGTH_LONG).show()
-        } catch (e: Exception) {
-            statusText.text = "Status: SMS verzenden mislukt."
-            Toast.makeText(this, "SMS verzenden mislukt: ${e.message}", Toast.LENGTH_LONG).show()
-        }
-    }
-
-    private fun buildSmsMessage(source: String): String {
-        val fullName = "${prefs.getString(keyFirstName, "")} ${prefs.getString(keyLastName, "")}".trim()
-        val team = prefs.getString(keyTeam, "")
-        val date = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.getDefault()).format(Date())
-        val location = getLocationUrl()
-
-        return if (source == "Test") {
-            "TESTBERICHT - CAW SOS\nDit is een test van de CAW SOS-app.\nMedewerker: $fullName\nTeam: $team\nTijd: $date\nLocatie: $location"
-        } else {
-            "NOODMELDING - CAW Halle-Vilvoorde\nMedewerker: $fullName\nTeam: $team\nTijd: $date\nLocatie: $location\nActivatie: $source"
-        }
-    }
-
-    private fun getLocationUrl(): String {
-        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
-            checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
         ) {
-            return "Locatie niet beschikbaar: geen machtiging."
-        }
+            Text("CAW SOS", style = MaterialTheme.typography.headlineLarge)
+            Spacer(Modifier.height(16.dp))
 
-        return try {
-            val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
-            var loc: Location? = null
-            try {
-                loc = lm.getLastKnownLocation(LocationManager.GPS_PROVIDER)
-            } catch (_: Exception) {}
-            if (loc == null) {
-                try {
-                    loc = lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
-                } catch (_: Exception) {}
-            }
+            Text("Welkom")
+            Text("$firstName $lastName", style = MaterialTheme.typography.titleLarge)
 
-            if (loc != null) {
-                "https://maps.google.com/?q=${loc.latitude},${loc.longitude}"
+            Spacer(Modifier.height(32.dp))
+
+            if (countdown > 0) {
+                Text("Bericht wordt verstuurd over $countdown seconden")
+                Spacer(Modifier.height(20.dp))
+
+                Button(
+                    onClick = {
+                        countdown = 0
+                        statusMessage = "SOS geannuleerd."
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color.Gray),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Annuleren")
+                }
             } else {
-                "Locatie nog niet beschikbaar. Zet locatie aan en probeer opnieuw."
+                Button(
+                    onClick = {
+                        isTest = false
+                        statusMessage = ""
+                        countdown = 5
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(90.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color.Red)
+                ) {
+                    Text("SOS", color = Color.White)
+                }
+
+                Spacer(Modifier.height(16.dp))
+
+                Button(
+                    onClick = {
+                        isTest = true
+                        statusMessage = ""
+                        countdown = 5
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Test SOS")
+                }
+
+                Spacer(Modifier.height(16.dp))
+
+                OutlinedButton(
+                    onClick = onSettingsClick,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Instellingen")
+                }
             }
-        } catch (_: Exception) {
-            "Locatie kon niet worden opgehaald."
-        }
-    }
 
-    private fun requestNeededPermissions() {
-        val missing = permissions.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
-        if (missing.isNotEmpty()) requestPermissions(missing.toTypedArray(), 1001)
-    }
+            Spacer(Modifier.height(24.dp))
 
-    private fun vibrate() {
-        try {
-            val vibrator = getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
-            vibrator.vibrate(VibrationEffect.createOneShot(700, VibrationEffect.DEFAULT_AMPLITUDE))
-        } catch (_: Exception) {}
-    }
+            if (!hasRequiredPermissions) {
+                Text("SMS- en locatiepermissies zijn nodig voor deze app.", color = Color.Red)
+            }
 
-    override fun onResume() {
-        super.onResume()
-        accelerometer?.also {
-            sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
-        }
-    }
-
-    override fun onPause() {
-        super.onPause()
-        sensorManager?.unregisterListener(this)
-    }
-
-    override fun onSensorChanged(event: SensorEvent) {
-        val acceleration = sqrt(
-            event.values[0] * event.values[0] +
-                    event.values[1] * event.values[1] +
-                    event.values[2] * event.values[2]
-        )
-        val now = System.currentTimeMillis()
-
-        if (acceleration > shakeThreshold) {
-            if (now - lastShakeTime > shakeWindowMs) shakeCount = 0
-            shakeCount++
-            lastShakeTime = now
-
-            if (shakeCount >= requiredShakes) {
-                shakeCount = 0
-                startSosCountdown("Shake")
+            if (statusMessage.isNotBlank()) {
+                Text(statusMessage)
             }
         }
     }
 
-    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+    private fun sendSosSms(
+        firstName: String,
+        lastName: String,
+        sosNumber: String,
+        isTest: Boolean
+    ): String {
+        return try {
+            if (!checkPermissions()) {
+                return "Geen toestemming voor SMS of locatie."
+            }
+
+            val dateTime = SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.getDefault()).format(Date())
+            val locationText = getLocationText()
+
+            val message = buildString {
+                if (isTest) {
+                    append("TESTBERICHT\n\n")
+                }
+                append("CAW HALLE-VILVOORDE\n\n")
+                append("SOS NOODMELDING\n\n")
+                append("Naam medewerker: $firstName $lastName\n")
+                append("Datum + tijd: $dateTime\n")
+                append("Google Maps locatie: $locationText")
+            }
+
+            val smsManager = SmsManager.getDefault()
+            val parts = smsManager.divideMessage(message)
+            smsManager.sendMultipartTextMessage(sosNumber, null, parts, null, null)
+
+            if (isTest) "Testbericht verstuurd." else "SOS-bericht verstuurd."
+        } catch (e: Exception) {
+            "Fout bij versturen van SMS: ${e.message}"
+        }
+    }
+
+    private fun getLocationText(): String {
+        return try {
+            val locationPermission = ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.ACCESS_FINE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
+
+            if (!locationPermission) {
+                return "Locatie niet beschikbaar"
+            }
+
+            val locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+            val gpsLocation = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+            val networkLocation = locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
+
+            val location = gpsLocation ?: networkLocation
+
+            if (location != null) {
+                "https://maps.google.com/?q=${location.latitude},${location.longitude}"
+            } else {
+                "Locatie niet beschikbaar"
+            }
+        } catch (e: Exception) {
+            "Locatie niet beschikbaar"
+        }
+    }
 }
